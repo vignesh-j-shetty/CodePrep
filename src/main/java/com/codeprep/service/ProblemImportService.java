@@ -1,6 +1,7 @@
 package com.codeprep.service;
 
 import com.codeprep.model.Problem;
+import com.codeprep.editor.LanguageProviderRegistry;
 import com.codeprep.repository.ProblemRepository;
 import java.io.IOException;
 import java.nio.file.FileAlreadyExistsException;
@@ -33,10 +34,17 @@ public final class ProblemImportService {
 
     private final ProblemRepository repository;
     private final ProblemFingerprintService fingerprints;
+    private final LanguageProviderRegistry languages;
 
     public ProblemImportService(ProblemRepository repository, ProblemFingerprintService fingerprints) {
+        this(repository, fingerprints, LanguageProviderRegistry.discover());
+    }
+
+    public ProblemImportService(ProblemRepository repository, ProblemFingerprintService fingerprints,
+                                LanguageProviderRegistry languages) {
         this.repository = repository;
         this.fingerprints = fingerprints;
+        this.languages = languages;
     }
 
     public Preview scan(Path source, Path library) throws IOException {
@@ -232,13 +240,15 @@ public final class ProblemImportService {
         Files.createDirectory(destination);
         Files.copy(source.resolve("problem.md"), destination.resolve("problem.md"), LinkOption.NOFOLLOW_LINKS);
         Files.copy(source.resolve("testcases.json"), destination.resolve("testcases.json"), LinkOption.NOFOLLOW_LINKS);
-        Path java = source.resolve("solutions").resolve("java");
-        if (Files.isDirectory(java)) {
-            Files.walkFileTree(java, new SimpleFileVisitor<>() {
+        for (var provider : languages.providers()) {
+            Path sources = source.resolve("solutions").resolve(provider.solutionDirectory());
+            if (!Files.isDirectory(sources)) continue;
+            Files.walkFileTree(sources, new SimpleFileVisitor<>() {
                 @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                     if (attrs.isSymbolicLink()) throw new IOException("Symbolic links are not supported: " + file);
-                    if (attrs.isRegularFile() && file.getFileName().toString().endsWith(".java")) {
-                        Path target = destination.resolve("solutions").resolve("java").resolve(java.relativize(file));
+                    if (attrs.isRegularFile() && provider.sourceExtensions().stream()
+                            .anyMatch(extension -> file.getFileName().toString().endsWith(extension))) {
+                        Path target = destination.resolve("solutions").resolve(provider.solutionDirectory()).resolve(sources.relativize(file));
                         Files.createDirectories(target.getParent());
                         Files.copy(file, target, LinkOption.NOFOLLOW_LINKS);
                     }

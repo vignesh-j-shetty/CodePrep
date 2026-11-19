@@ -2,9 +2,11 @@ package com.codeprep.controller;
 
 import com.codeprep.config.AppConfig;
 import com.codeprep.dto.TestCaseDisplayResult;
-import com.codeprep.editor.EditorIndentation;
+import com.codeprep.editor.LanguageEditor;
+import com.codeprep.editor.LanguageProvider;
+import com.codeprep.editor.LanguageProviderRegistry;
+import com.codeprep.editor.SolutionDocuments;
 import com.codeprep.executor.ExecutionManager;
-import com.codeprep.executor.JavaExecutor;
 import com.codeprep.model.*;
 import com.codeprep.repository.ProblemRepository;
 import com.codeprep.repository.ProgressRepository;
@@ -16,8 +18,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -26,44 +26,32 @@ import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.Parent;
 import javafx.scene.layout.GridPane;
-import javafx.scene.input.KeyCode;
-import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.*;
 import javafx.scene.web.WebView;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
-import org.fxmisc.richtext.CodeArea;
-import org.fxmisc.richtext.LineNumberFactory;
-import org.fxmisc.richtext.model.StyleSpans;
-import org.fxmisc.richtext.model.StyleSpansBuilder;
-import org.fxmisc.flowless.VirtualizedScrollPane;
+import javafx.util.StringConverter;
 import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 
 public final class MainController {
-    private static final Pattern JAVA_TOKENS = Pattern.compile(
-            "//[^\\n]*|/\\*(?:.|\\R)*?\\*/|\"\"\"(?:.|\\R)*?\"\"\"|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'"
-                    + "|\\b(?:abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double"
-                    + "|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface"
-                    + "|long|native|new|package|private|protected|public|return|short|static|strictfp|super|switch"
-                    + "|synchronized|this|throw|throws|transient|try|void|volatile|while|record|sealed|permits|var"
-                    + "|yield|null|true|false)\\b|\\b\\d+(?:\\.\\d+)?\\b");
     private final Stage stage;
     private AppConfig config;
     private final ProblemService problemService;
     private final ProblemImportService importService;
     private ProgressService progressService;
-    private final ExecutionManager executionManager = new ExecutionManager(List.of(new JavaExecutor()));
+    private final LanguageProviderRegistry languages;
+    private final ExecutionManager executionManager;
     private final TestCaseService testCaseService = new TestCaseService();
     private final List<Problem> allProblems = new ArrayList<>();
     private final Map<String, String> problemSearchIndex = new HashMap<>();
-    private final Map<String, String> drafts = new HashMap<>();
-    private final Map<String, String> initialSolutions = new HashMap<>();
+    private final SolutionDocuments documents = new SolutionDocuments();
     private final ObjectMapper mapper = new ObjectMapper();
     private Problem selected;
     private boolean changingEditor;
+    private boolean changingLanguage;
     private ListView<Problem> problemList;
-    private CodeArea editor;
+    private LanguageEditor editor;
     private WebView description;
     private TextField search;
     private ComboBox<String> difficultyFilter;
@@ -90,11 +78,23 @@ public final class MainController {
     private final HtmlRenderer markdownRenderer = HtmlRenderer.builder().build();
 
     public MainController(AppConfig config, Stage stage) throws IOException {
+        this(config, stage, LanguageProviderRegistry.discover(), ExecutionManager.discover());
+    }
+
+    public MainController(AppConfig config, Stage stage, LanguageProviderRegistry languages,
+                          ExecutionManager executionManager) throws IOException {
         this.config = config;
         this.stage = stage;
+        this.languages = languages;
+        this.executionManager = executionManager;
+        try {
+            languages.require(config.selectedLanguage());
+        } catch (IllegalArgumentException ex) {
+            throw new IOException(ex.getMessage() + ". Install its language module or choose an installed language in settings.", ex);
+        }
         ProblemRepository repository = new ProblemRepository(new ProblemMarkdownParser(), new TestCaseParser(mapper));
         this.problemService = new ProblemService(repository);
-        this.importService = new ProblemImportService(repository, new ProblemFingerprintService());
+        this.importService = new ProblemImportService(repository, new ProblemFingerprintService(), languages);
         Path progressPath = config.problemRoot().resolve("progress.json");
         this.progressService = new ProgressService(new ProgressRepository(progressPath));
     }
@@ -106,6 +106,7 @@ public final class MainController {
                 showInfo("Operation in progress", "Wait for import or execution to finish before closing CodePrep.");
             } else if (hasUnsavedChanges() && !confirmClose()) event.consume();
         });
+        stage.setOnHidden(event -> editor.close());
         BorderPane root = new BorderPane();
         root.getStyleClass().add("root");
         root.setTop(buildToolbar());
@@ -156,11 +157,16 @@ public final class MainController {
         search.getStyleClass().add("search-field");
         search.setPrefWidth(280);
         languageSelector = new ComboBox<>();
-        languageSelector.getItems().setAll(Language.JAVA);
+        languageSelector.getItems().setAll(languages.providers().stream().map(LanguageProvider::language).toList());
+        languageSelector.setConverter(new StringConverter<>() {
+            @Override public String toString(Language language) {
+                return language == null ? "" : languages.require(language).displayName();
+            }
+            @Override public Language fromString(String value) { throw new UnsupportedOperationException(); }
+        });
         languageSelector.setValue(config.selectedLanguage());
         languageSelector.setOnAction(e -> {
-            config = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), languageSelector.getValue(), config.theme());
-            saveConfig();
+            if (!changingLanguage) switchLanguage(languageSelector.getValue());
         });
         Button random = new Button("Random Problem");
         random.setTooltip(new Tooltip("Choose an unsolved problem, ignoring the current filters"));
@@ -183,12 +189,16 @@ public final class MainController {
     }
 
     private boolean hasUnsavedChanges() {
-        if (selected == null || editor == null) return false;
         try {
-            Path file = solutionFile(selected);
-            String saved = Files.isRegularFile(file) ? Files.readString(file)
-                    : initialSolutions.computeIfAbsent(selected.id(), ignored -> loadSolution(selected));
-            return !editor.getText().equals(saved);
+            for (var entry : documents.drafts().entrySet()) {
+                Problem problem = allProblems.stream().filter(p -> p.id().equals(entry.getKey().problemId())).findFirst().orElseThrow();
+                LanguageProvider provider = languages.require(entry.getKey().language());
+                Path file = SolutionDocuments.file(problem.directory(), provider);
+                String saved = Files.isRegularFile(file) ? Files.readString(file)
+                        : documents.initial().getOrDefault(entry.getKey(), provider.starterCode());
+                if (!entry.getValue().equals(saved)) return true;
+            }
+            return false;
         } catch (IOException ex) {
             return true;
         }
@@ -227,37 +237,16 @@ public final class MainController {
         HBox.setHgrow(spacer, Priority.ALWAYS);
         HBox titleBar = new HBox(8, selectedTitle, spacer, busyIndicator, busyLabel);
         titleBar.setAlignment(Pos.CENTER_LEFT);
-        editor = new CodeArea();
-        editor.setParagraphGraphicFactory(LineNumberFactory.get(editor));
-        editor.getStyleClass().add("code-area");
-        editor.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
-            if (event.isShortcutDown() && event.getCode() == KeyCode.S) {
-                saveSolution();
-                event.consume();
-            } else if (event.isShortcutDown() && event.getCode() == KeyCode.ENTER) {
-                if (!runButton.isDisabled()) execute(false);
-                event.consume();
-            } else if (event.getCode() == KeyCode.TAB && !event.isControlDown()
-                    && !event.isAltDown() && !event.isMetaDown()) {
-                var edit = EditorIndentation.tab(editor.getText(), editor.getAnchor(), editor.getCaretPosition(), event.isShiftDown());
-                editor.replaceText(edit.start(), edit.end(), edit.replacement());
-                editor.selectRange(edit.anchor(), edit.caret());
-                event.consume();
-            } else if (event.getCode() == KeyCode.ENTER && !event.isControlDown()
-                    && !event.isAltDown() && !event.isMetaDown() && !event.isShiftDown()) {
-                editor.replaceSelection(EditorIndentation.newline(editor.getText(), editor.getSelection().getStart()));
-                event.consume();
-            }
-        });
+        editor = new LanguageEditor(activeProvider(), message -> showError("Editor operation unavailable", message));
+        editor.setOnSave(() -> { if (!busy) saveSolution(); });
+        editor.setOnRun(() -> { if (!runButton.isDisabled()) execute(false); });
         caretPosition = new Label("Ln 1, Col 1");
         caretPosition.getStyleClass().add("editor-status");
         editor.caretPositionProperty().addListener((observable, oldValue, newValue) -> updateCaretPosition());
-        editor.multiPlainChanges().successionEnds(java.time.Duration.ofMillis(120)).subscribe(ignore -> highlight());
         editor.textProperty().addListener((obs, old, value) -> {
-            if (!changingEditor && selected != null) drafts.put(selected.id(), value);
+            if (!changingEditor && selected != null) documents.drafts().put(documentKey(selected), value);
         });
-        VirtualizedScrollPane<CodeArea> editorScroll = new VirtualizedScrollPane<>(editor);
-        VBox.setVgrow(editorScroll, Priority.ALWAYS);
+        VBox.setVgrow(editor, Priority.ALWAYS);
         Button run = new Button("Run");
         run.getStyleClass().add("secondary-button");
         run.setTooltip(new Tooltip("Run sample tests (Ctrl+Enter)"));
@@ -282,7 +271,7 @@ public final class MainController {
         actions.setAlignment(Pos.CENTER_RIGHT);
         actions.setPadding(new Insets(10, 0, 0, 0));
         actions.getStyleClass().add("editor-actions");
-        VBox box = new VBox(10, titleBar, editorScroll, actions);
+        VBox box = new VBox(10, titleBar, editor, actions);
         box.setPadding(new Insets(16));
         box.getStyleClass().add("editor-pane");
         return box;
@@ -361,26 +350,21 @@ public final class MainController {
     }
 
     private void selectProblem(Problem problem) {
-        if (selected != null) {
-            String savedDraft = drafts.get(selected.id());
-            if (savedDraft == null) savedDraft = loadSolution(selected);
-            if (editor.getText().equals(savedDraft)) {
-                drafts.put(selected.id(), editor.getText());
-            } else if (!confirmDiscard()) {
-                problemList.getSelectionModel().select(selected);
-                return;
-            }
+        String content;
+        try {
+            content = documentContent(problem, config.selectedLanguage());
+        } catch (IOException ex) {
+            showError("Could not read solution", ex.getMessage());
+            problemList.getSelectionModel().select(selected);
+            return;
         }
         selected = problem;
         selectedTitle.setText(problem.title() + "  ·  " + problem.difficulty().name());
         String html = markdownRenderer.render(markdownParser.parse(problem.descriptionMarkdown()));
         description.getEngine().loadContent("<html><head><meta charset='utf-8'><style>" + markdownCss() + "</style></head><body><main>" + html + "</main></body></html>");
         changingEditor = true;
-        String content = drafts.get(problem.id());
-        if (content == null) content = initialSolutions.computeIfAbsent(problem.id(), ignored -> loadSolution(problem));
         editor.replaceText(content);
         changingEditor = false;
-        highlight();
         refreshSampleCases();
         resultsText.clear();
         errorsText.clear();
@@ -405,20 +389,43 @@ public final class MainController {
         updateActionState();
     }
 
-    private boolean confirmDiscard() {
-        Alert alert = new Alert(Alert.AlertType.CONFIRMATION, "Keep editing this draft or discard it?", ButtonType.CANCEL, ButtonType.OK);
-        alert.setTitle("Unsaved solution");
-        alert.setHeaderText("You have unsaved changes.");
-        return alert.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK;
+    private LanguageProvider activeProvider() { return languages.require(config.selectedLanguage()); }
+
+    private SolutionDocuments.Key documentKey(Problem problem) {
+        return new SolutionDocuments.Key(problem.id(), config.selectedLanguage());
     }
 
-    private String loadSolution(Problem problem) {
-        Path file = solutionFile(problem);
+    private String documentContent(Problem problem, Language language) throws IOException {
+        var key = new SolutionDocuments.Key(problem.id(), language);
+        if (documents.drafts().containsKey(key)) return documents.drafts().get(key);
+        if (documents.initial().containsKey(key)) return documents.initial().get(key);
+        LanguageProvider provider = languages.require(language);
+        Path file = SolutionDocuments.file(problem.directory(), provider);
+        String content = Files.isRegularFile(file) ? Files.readString(file) : provider.starterCode();
+        documents.initial().put(key, content);
+        return content;
+    }
+
+    private void switchLanguage(Language language) {
+        if (language == null || language.equals(config.selectedLanguage())) return;
         try {
-            return Files.isRegularFile(file) ? Files.readString(file) : "import java.util.*;\n\nclass Solution {\n    \n}\n";
+            String content = selected == null ? "" : documentContent(selected, language);
+            AppConfig updated = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language, config.theme());
+            updated.save();
+            config = updated;
+            changingEditor = true;
+            editor.setProvider(activeProvider());
+            editor.replaceText(content);
+            changingEditor = false;
+            resultsText.clear();
+            errorsText.clear();
+            outputText.clear();
+            updateActionState();
         } catch (IOException ex) {
-            showError("Could not read solution", ex.getMessage());
-            return "class Solution {\n}\n";
+            changingLanguage = true;
+            languageSelector.setValue(config.selectedLanguage());
+            changingLanguage = false;
+            showError("Could not switch language", ex.getMessage());
         }
     }
 
@@ -436,6 +443,10 @@ public final class MainController {
 
     private void execute(boolean allTests) {
         if (busy || selected == null) return;
+        if (!executionManager.supports(config.selectedLanguage())) {
+            showError("Execution unavailable", "No executor registered for " + activeProvider().displayName() + ".");
+            return;
+        }
         List<TestCase> selectedCases = testCaseService.forRun(selected, allTests);
         if (selectedCases.isEmpty()) { showError("No test cases", "This problem has no sample test cases."); return; }
         String code = editor.getText();
@@ -444,7 +455,7 @@ public final class MainController {
         int timeout = config.executionTimeoutSeconds();
         setBusy(true, "Compiling and running…");
         String problemId = problem.id();
-        Path adapterDir = problem.directory().resolve("solutions").resolve("java");
+        Path adapterDir = SolutionDocuments.directory(problem.directory(), activeProvider());
         Task<ExecutionResult> task = new Task<>() {
             @Override protected ExecutionResult call() {
                 return executionManager.execute(new ExecutionRequest(problem, code, language,
@@ -528,8 +539,13 @@ public final class MainController {
 
     private void updateActionState() {
         boolean noProblem = selected == null;
-        if (runButton != null) runButton.setDisable(busy || noProblem);
-        if (runAllButton != null) runAllButton.setDisable(busy || noProblem);
+        boolean noExecutor = !executionManager.supports(config.selectedLanguage());
+        if (runButton != null) runButton.setDisable(busy || noProblem || noExecutor);
+        if (runAllButton != null) runAllButton.setDisable(busy || noProblem || noExecutor);
+        if (runButton != null) runButton.setTooltip(new Tooltip(noExecutor
+                ? "No executor registered for " + activeProvider().displayName() : "Run sample tests (Ctrl+Enter)"));
+        if (runAllButton != null) runAllButton.setTooltip(new Tooltip(noExecutor
+                ? "No executor registered for " + activeProvider().displayName() : "Run sample and hidden tests"));
         if (saveButton != null) saveButton.setDisable(busy || noProblem);
         if (resetButton != null) resetButton.setDisable(busy || noProblem);
         if (search != null) search.setDisable(busy);
@@ -652,24 +668,29 @@ public final class MainController {
         try {
             Files.createDirectories(target.getParent());
             Files.writeString(target, editor.getText());
-            drafts.put(selected.id(), editor.getText());
-            initialSolutions.put(selected.id(), editor.getText());
+            documents.drafts().put(documentKey(selected), editor.getText());
+            documents.initial().put(documentKey(selected), editor.getText());
             showInfo("Solution saved", target.toString());
         } catch (IOException ex) { showError("Could not save solution", ex.getMessage()); }
     }
 
     private Path solutionFile(Problem problem) {
-        return problem.directory().resolve("solutions").resolve("java").resolve("Solution.java");
+        return SolutionDocuments.file(problem.directory(), activeProvider());
     }
 
     private void resetSolution() {
         if (selected == null) return;
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Reset the editor to the saved solution or default template?", ButtonType.CANCEL, ButtonType.OK);
         if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
-        drafts.remove(selected.id());
-        changingEditor = true;
-        editor.replaceText(initialSolutions.computeIfAbsent(selected.id(), ignored -> loadSolution(selected)));
-        changingEditor = false;
+        try {
+            Path file = solutionFile(selected);
+            String content = Files.isRegularFile(file) ? Files.readString(file) : activeProvider().starterCode();
+            documents.initial().put(documentKey(selected), content);
+            documents.drafts().remove(documentKey(selected));
+            changingEditor = true;
+            editor.replaceText(content);
+            changingEditor = false;
+        } catch (IOException ex) { showError("Could not reset solution", ex.getMessage()); }
     }
 
     private void selectRandom() {
@@ -720,30 +741,6 @@ public final class MainController {
             updated.save();
             config = updated;
         } catch (IOException ex) { showError("Settings could not be saved", ex.getMessage()); }
-    }
-
-    private void saveConfig() {
-        try { config.save(); } catch (IOException ex) { showError("Settings could not be saved", ex.getMessage()); }
-    }
-
-    private void highlight() {
-        if (editor == null || editor.getLength() == 0) return;
-        String text = editor.getText();
-        Matcher matcher = JAVA_TOKENS.matcher(text);
-        StyleSpansBuilder<Collection<String>> spans = new StyleSpansBuilder<>();
-        int last = 0;
-        while (matcher.find()) {
-            spans.add(Collections.emptyList(), matcher.start() - last);
-            String token = matcher.group();
-            String style = token.startsWith("//") || token.startsWith("/*") ? "comment"
-                    : token.startsWith("\"") || token.startsWith("'") ? "string"
-                    : Character.isDigit(token.charAt(0)) ? "number" : "keyword";
-            spans.add(Collections.singleton(style), matcher.end() - matcher.start());
-            last = matcher.end();
-        }
-        spans.add(Collections.emptyList(), text.length() - last);
-        StyleSpans<Collection<String>> styleSpans = spans.create();
-        editor.setStyleSpans(0, styleSpans);
     }
 
     private String markdownCss() {

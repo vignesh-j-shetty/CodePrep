@@ -31,9 +31,10 @@ class EditorIndentationTest {
                 EditorIndentation.tab("name", 2, 2, true));
     }
 
-    @Test void newlineUsesIndentationAndBraceBeforeSelection() {
-        assertEquals("\n        ", EditorIndentation.newline("    if (ok) {tail", 13));
-        assertEquals("\n    ", EditorIndentation.newline("    abc {", 7));
-        assertEquals("\n\t", EditorIndentation.newline("\tword", 5));
+    @Test void tabUsesTheSelectedLanguagesIndentation() {
+        assertEquals(new EditorIndentation.Edit(1, 1, "  ", 3, 3),
+                EditorIndentation.tab("abc", 1, 1, false, "  "));
+        assertEquals(new EditorIndentation.Edit(0, 7, "hello", 1, 1),
+                EditorIndentation.tab("  hello", 3, 3, true, "  "));
     }
 }

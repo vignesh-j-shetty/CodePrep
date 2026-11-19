@@ -13,8 +13,10 @@ public final class CodePrepApplication extends Application {
     private AppConfig config;
 
     @Override public void start(Stage stage) throws IOException {
+        MainController controller;
         try {
             config = AppConfig.initializeLibrary();
+            controller = new MainController(config, stage);
         } catch (IOException ex) {
             Alert error = new Alert(Alert.AlertType.ERROR, ex.getMessage());
             error.setTitle("Could not open problem library");
@@ -23,7 +25,6 @@ public final class CodePrepApplication extends Application {
             javafx.application.Platform.exit();
             return;
         }
-        MainController controller = new MainController(config, stage);
         Scene scene = new Scene((Parent) controller.createView(), 1440, 900);
         scene.getStylesheets().add(getClass().getResource("/styles.css").toExternalForm());
         stage.setTitle("CodePrep");

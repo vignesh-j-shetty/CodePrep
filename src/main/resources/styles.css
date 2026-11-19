@@ -149,6 +149,9 @@
 .code-area .string { -fx-fill: #a5d6a7; }
 .code-area .comment { -fx-fill: #778194; }
 .code-area .number { -fx-fill: #f0ad70; }
+.code-area .diagnostic-error { -rtfx-underline-color: #ef7373; -rtfx-underline-width: 1.5px; -rtfx-underline-wave-radius: 2; }
+.code-area .diagnostic-warning { -rtfx-underline-color: #f0ad70; -rtfx-underline-width: 1.5px; }
+.code-area .diagnostic-info { -rtfx-underline-color: #80b7ff; -rtfx-underline-width: 1px; }
 
 .tooltip {
     -fx-background-color: #292f3a;

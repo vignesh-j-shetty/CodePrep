@@ -4,6 +4,8 @@ import static com.codeprep.service.ProblemImportService.Status.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.codeprep.repository.ProblemRepository;
+import com.codeprep.editor.LanguageProviderRegistry;
+import com.codeprep.editor.TestLanguageProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -58,6 +60,20 @@ class ProblemImportServiceTest {
                 "solutions/java/TestAdapter.java", "solutions/java/Other.java"), snapshot(imported).keySet());
         assertEquals(1, repository.discover(library).size());
         assertNoStagingFolders();
+    }
+
+    @Test void importsSourcesForANewlyRegisteredLanguageWithoutImporterChanges() throws Exception {
+        Path incoming = question(source, "New", "A Question", "Do something.", CASES);
+        Path sources = Files.createDirectories(incoming.resolve("solutions").resolve("python"));
+        Files.writeString(sources.resolve("solution.py"), "def solve(): pass");
+        Files.writeString(sources.resolve("adapter.py"), "adapter");
+        Files.writeString(sources.resolve("compiled.pyc"), "not source");
+        var extensibleImporter = new ProblemImportService(repository, new ProblemFingerprintService(),
+                new LanguageProviderRegistry(List.of(new TestLanguageProvider())));
+        var result = extensibleImporter.importQuestions(extensibleImporter.scan(incoming, library), Set.of());
+        assertEquals(1, result.imported());
+        assertEquals(Set.of("problem.md", "testcases.json", "solutions/python/solution.py", "solutions/python/adapter.py"),
+                snapshot(library.resolve("New")).keySet());
     }
 
     @Test void skipsEquivalentStatementAndTestsDespiteMetadataPathsAndSolutionChanges() throws Exception {
