@@ -1,5 +1,6 @@
 package com.codeprep.config;
 
+import com.codeprep.editor.LanguageEditor;
 import com.codeprep.model.Language;
 import com.codeprep.service.DemoProblemInstaller;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -10,8 +11,18 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-public record AppConfig(Path problemRoot, int executionTimeoutSeconds, Language selectedLanguage, String theme) {
+public record AppConfig(Path problemRoot, int executionTimeoutSeconds, Language selectedLanguage, String theme,
+                        int editorFontSize) {
     private static final ObjectMapper MAPPER = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+    public AppConfig {
+        editorFontSize = LanguageEditor.clampFontSize(editorFontSize);
+    }
+    public AppConfig(Path problemRoot, int executionTimeoutSeconds, Language selectedLanguage, String theme) {
+        this(problemRoot, executionTimeoutSeconds, selectedLanguage, theme, LanguageEditor.DEFAULT_FONT_SIZE);
+    }
+    public AppConfig withEditorFontSize(int size) {
+        return new AppConfig(problemRoot, executionTimeoutSeconds, selectedLanguage, theme, size);
+    }
     public static Path configFile() {
         return Path.of(System.getProperty("user.home"), ".codeprep", "settings.json");
     }
@@ -27,7 +38,8 @@ public record AppConfig(Path problemRoot, int executionTimeoutSeconds, Language 
             Language language = data.hasNonNull("selectedLanguage")
                     ? Language.valueOf(data.get("selectedLanguage").asText()) : Language.JAVA;
             return new AppConfig(root, Math.max(1, Math.min(60, data.path("executionTimeoutSeconds").asInt(5))),
-                    language, data.path("theme").asText("dark"));
+                    language, data.path("theme").asText("dark"),
+                    data.path("editorFontSize").asInt(LanguageEditor.DEFAULT_FONT_SIZE));
         } catch (IOException | RuntimeException ex) {
             throw new IOException("Could not read settings at " + file + ". Restore or repair this file; it was not reset.", ex);
         }
@@ -45,7 +57,8 @@ public record AppConfig(Path problemRoot, int executionTimeoutSeconds, Language 
         Path root = configFile().getParent().resolve("problems");
         if (!Files.exists(root)) DemoProblemInstaller.install(root);
         if (!Files.isDirectory(root)) throw new IOException("Problem library is not a directory: " + root);
-        config = new AppConfig(root, config.executionTimeoutSeconds(), config.selectedLanguage(), config.theme());
+        config = new AppConfig(root, config.executionTimeoutSeconds(), config.selectedLanguage(), config.theme(),
+                config.editorFontSize());
         config.save();
         return config;
     }
@@ -57,6 +70,7 @@ public record AppConfig(Path problemRoot, int executionTimeoutSeconds, Language 
         data.put("executionTimeoutSeconds", executionTimeoutSeconds);
         data.put("selectedLanguage", selectedLanguage.name());
         data.put("theme", theme);
+        data.put("editorFontSize", editorFontSize);
         MAPPER.writeValue(file.toFile(), data);
     }
 }

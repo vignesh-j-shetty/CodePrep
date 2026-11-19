@@ -142,8 +142,17 @@
 .code-area .text { -fx-fill: #dce1ea; }
 .code-area .caret { -fx-stroke: #80b7ff; -fx-stroke-width: 2; }
 .code-area .selection { -fx-highlight-fill: #294c75; }
-.code-area .lineno { -fx-background-color: #181b22; -fx-text-fill: #788396; -fx-padding: 0 12px 0 9px; }
+.code-area .lineno {
+    -fx-background-color: #181b22;
+    -fx-text-fill: #788396;
+    -fx-padding: 0 12px 0 9px;
+    -fx-font-family: "Cascadia Code", "Consolas", "Menlo", monospace;
+    -fx-font-style: normal;
+}
 .editor-status { -fx-text-fill: #929bad; -fx-font-size: 11px; }
+.font-size-selector { -fx-padding: 1px 4px; -fx-font-size: 12px; }
+.font-size-selector > .list-cell { -fx-padding: 3px 6px; }
+.font-size-selector:hover { -fx-border-color: #495365; }
 .editor-actions { -fx-border-color: #292e39 transparent transparent transparent; -fx-border-width: 1px 0 0 0; }
 .code-area .keyword { -fx-fill: #c792ea; -fx-font-weight: bold; }
 .code-area .string { -fx-fill: #a5d6a7; }

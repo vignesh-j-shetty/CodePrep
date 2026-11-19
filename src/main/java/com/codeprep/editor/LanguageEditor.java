@@ -8,10 +8,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Consumer;
+import java.util.function.IntFunction;
 import javafx.animation.PauseTransition;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.binding.StringBinding;
+import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.value.ObservableValue;
 import javafx.geometry.Side;
+import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
@@ -19,6 +25,7 @@ import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
@@ -49,12 +56,40 @@ public final class LanguageEditor extends VBox implements AutoCloseable {
     private boolean closed;
     private Runnable onSave = () -> {};
     private Runnable onRun = () -> {};
+    private final IntegerProperty fontSize = new SimpleIntegerProperty(this, "fontSize", DEFAULT_FONT_SIZE);
+
+    public static final int MIN_FONT_SIZE = 10;
+    public static final int MAX_FONT_SIZE = 32;
+    public static final int DEFAULT_FONT_SIZE = 13;
+    public static final List<Integer> FONT_SIZE_PRESETS = List.of(10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32);
+
+    public static int clampFontSize(int size) {
+        return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, size));
+    }
 
     public LanguageEditor(LanguageProvider provider, Consumer<String> onError) {
         getStyleClass().add("language-editor");
         this.provider = provider;
         this.onError = onError;
-        area.setParagraphGraphicFactory(LineNumberFactory.get(area));
+        StringBinding fontStyle = Bindings.createStringBinding(
+                () -> "-fx-font-size: " + fontSize.get() + "px;", fontSize);
+        area.styleProperty().bind(fontStyle);
+        IntFunction<Node> lineNumbers = LineNumberFactory.get(area);
+        area.setParagraphGraphicFactory(line -> {
+            Node graphic = lineNumbers.apply(line);
+            // LineNumberFactory assigns a fixed font; an inline style keeps the gutter in step with the text.
+            graphic.styleProperty().bind(fontStyle);
+            return graphic;
+        });
+        fontSize.addListener((obs, old, value) -> {
+            int clamped = clampFontSize(value.intValue());
+            if (clamped != value.intValue()) fontSize.set(clamped);
+        });
+        area.addEventFilter(ScrollEvent.SCROLL, event -> {
+            if (!event.isShortcutDown() || event.getDeltaY() == 0) return;
+            if (event.getDeltaY() > 0) zoomIn(); else zoomOut();
+            event.consume();
+        });
         area.getStyleClass().add("code-area");
         var scroll = new VirtualizedScrollPane<>(area);
         VBox.setVgrow(scroll, Priority.ALWAYS);
@@ -85,6 +120,8 @@ public final class LanguageEditor extends VBox implements AutoCloseable {
         menu.getItems().addAll(action("Complete / snippets (Ctrl+Space)", this::showCompletions),
                 action("Format document (Ctrl+Shift+F)", this::format),
                 action("Toggle comment (Ctrl+/)", this::toggleComment), new SeparatorMenuItem(),
+                action("Increase text size (Ctrl+=)", this::zoomIn), action("Decrease text size (Ctrl+-)", this::zoomOut),
+                action("Reset text size (Ctrl+0)", this::resetZoom), new SeparatorMenuItem(),
                 action("Undo", area::undo), action("Redo", area::redo),
                 action("Cut", area::cut), action("Copy", area::copy), action("Paste", area::paste));
         area.setContextMenu(menu);
@@ -102,6 +139,17 @@ public final class LanguageEditor extends VBox implements AutoCloseable {
         area.clearStyle(0, area.getLength());
         refresh.playFromStart();
     }
+
+    public IntegerProperty fontSizeProperty() { return fontSize; }
+    public int getFontSize() { return fontSize.get(); }
+    public void setFontSize(int size) { fontSize.set(clampFontSize(size)); }
+    public void zoomIn() {
+        setFontSize(FONT_SIZE_PRESETS.stream().filter(s -> s > getFontSize()).findFirst().orElse(MAX_FONT_SIZE));
+    }
+    public void zoomOut() {
+        setFontSize(FONT_SIZE_PRESETS.stream().filter(s -> s < getFontSize()).reduce((a, b) -> b).orElse(MIN_FONT_SIZE));
+    }
+    public void resetZoom() { setFontSize(DEFAULT_FONT_SIZE); }
 
     public void setOnSave(Runnable action) { onSave = action; }
     public void setOnRun(Runnable action) { onRun = action; }
@@ -129,6 +177,10 @@ public final class LanguageEditor extends VBox implements AutoCloseable {
         else if (event.isControlDown() && event.getCode() == KeyCode.SPACE) showCompletions();
         else if (event.isShortcutDown() && event.isShiftDown() && event.getCode() == KeyCode.F) format();
         else if (event.isShortcutDown() && event.getCode() == KeyCode.SLASH) toggleComment();
+        else if (event.isShortcutDown() && (event.getCode() == KeyCode.EQUALS || event.getCode() == KeyCode.PLUS
+                || event.getCode() == KeyCode.ADD)) zoomIn();
+        else if (event.isShortcutDown() && (event.getCode() == KeyCode.MINUS || event.getCode() == KeyCode.SUBTRACT)) zoomOut();
+        else if (event.isShortcutDown() && (event.getCode() == KeyCode.DIGIT0 || event.getCode() == KeyCode.NUMPAD0)) resetZoom();
         else if (!event.isControlDown() && !event.isAltDown() && !event.isMetaDown()) {
             if (event.getCode() == KeyCode.TAB) {
                 apply(EditorIndentation.tab(getText(), area.getAnchor(), getCaretPosition(), event.isShiftDown(), provider.indentation()));

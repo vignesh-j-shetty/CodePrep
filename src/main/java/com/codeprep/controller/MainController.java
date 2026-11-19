@@ -68,6 +68,8 @@ public final class MainController {
     private Button settingsButton;
     private Button importButton;
     private ComboBox<Language> languageSelector;
+    private ComboBox<Integer> fontSizeSelector;
+    private final javafx.animation.PauseTransition fontSizeSave = new javafx.animation.PauseTransition(javafx.util.Duration.millis(400));
     private boolean busy;
     private TabPane outputTabs;
     private TextArea testCasesText;
@@ -106,7 +108,13 @@ public final class MainController {
                 showInfo("Operation in progress", "Wait for import or execution to finish before closing CodePrep.");
             } else if (hasUnsavedChanges() && !confirmClose()) event.consume();
         });
-        stage.setOnHidden(event -> editor.close());
+        stage.setOnHidden(event -> {
+            if (fontSizeSave.getStatus() == javafx.animation.Animation.Status.RUNNING) {
+                fontSizeSave.stop();
+                persistEditorFontSize();
+            }
+            editor.close();
+        });
         BorderPane root = new BorderPane();
         root.getStyleClass().add("root");
         root.setTop(buildToolbar());
@@ -238,6 +246,7 @@ public final class MainController {
         HBox titleBar = new HBox(8, selectedTitle, spacer, busyIndicator, busyLabel);
         titleBar.setAlignment(Pos.CENTER_LEFT);
         editor = new LanguageEditor(activeProvider(), message -> showError("Editor operation unavailable", message));
+        editor.setFontSize(config.editorFontSize());
         editor.setOnSave(() -> { if (!busy) saveSolution(); });
         editor.setOnRun(() -> { if (!runButton.isDisabled()) execute(false); });
         caretPosition = new Label("Ln 1, Col 1");
@@ -267,7 +276,7 @@ public final class MainController {
         reset.setOnAction(e -> resetSolution());
         Region actionSpacer = new Region();
         HBox.setHgrow(actionSpacer, Priority.ALWAYS);
-        HBox actions = new HBox(8, caretPosition, actionSpacer, run, all, save, reset);
+        HBox actions = new HBox(8, caretPosition, buildFontSizeSelector(), actionSpacer, run, all, save, reset);
         actions.setAlignment(Pos.CENTER_RIGHT);
         actions.setPadding(new Insets(10, 0, 0, 0));
         actions.getStyleClass().add("editor-actions");
@@ -275,6 +284,43 @@ public final class MainController {
         box.setPadding(new Insets(16));
         box.getStyleClass().add("editor-pane");
         return box;
+    }
+
+    private Node buildFontSizeSelector() {
+        fontSizeSelector = new ComboBox<>();
+        fontSizeSelector.getStyleClass().add("font-size-selector");
+        fontSizeSelector.getItems().setAll(LanguageEditor.FONT_SIZE_PRESETS);
+        fontSizeSelector.setConverter(new StringConverter<>() {
+            @Override public String toString(Integer size) { return size == null ? "" : size + " px"; }
+            @Override public Integer fromString(String value) { throw new UnsupportedOperationException(); }
+        });
+        fontSizeSelector.setTooltip(new Tooltip("Editor text size (Ctrl+= / Ctrl+- / Ctrl+0, or Ctrl+scroll)"));
+        fontSizeSelector.setFocusTraversable(false);
+        fontSizeSelector.setValue(editor.getFontSize());
+        fontSizeSelector.setOnAction(e -> {
+            Integer size = fontSizeSelector.getValue();
+            if (size != null && size != editor.getFontSize()) editor.setFontSize(size);
+        });
+        fontSizeSave.setOnFinished(e -> persistEditorFontSize());
+        editor.fontSizeProperty().addListener((obs, old, size) -> {
+            if (!size.equals(fontSizeSelector.getValue())) fontSizeSelector.setValue(size.intValue());
+            fontSizeSave.playFromStart();
+        });
+        Label label = new Label("Text size");
+        label.getStyleClass().add("editor-status");
+        HBox box = new HBox(6, label, fontSizeSelector);
+        box.setAlignment(Pos.CENTER_LEFT);
+        box.setPadding(new Insets(0, 0, 0, 10));
+        return box;
+    }
+
+    private void persistEditorFontSize() {
+        if (config.editorFontSize() == editor.getFontSize()) return;
+        AppConfig updated = config.withEditorFontSize(editor.getFontSize());
+        try {
+            updated.save();
+            config = updated;
+        } catch (IOException ex) { showError("Text size could not be saved", ex.getMessage()); }
     }
 
     private void updateCaretPosition() {
@@ -410,7 +456,8 @@ public final class MainController {
         if (language == null || language.equals(config.selectedLanguage())) return;
         try {
             String content = selected == null ? "" : documentContent(selected, language);
-            AppConfig updated = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language, config.theme());
+            AppConfig updated = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language, config.theme(),
+                    config.editorFontSize());
             updated.save();
             config = updated;
             changingEditor = true;
@@ -737,7 +784,8 @@ public final class MainController {
             return;
         }
         try {
-            AppConfig updated = new AppConfig(config.problemRoot(), seconds, config.selectedLanguage(), theme.getValue());
+            AppConfig updated = new AppConfig(config.problemRoot(), seconds, config.selectedLanguage(), theme.getValue(),
+                    config.editorFontSize());
             updated.save();
             config = updated;
         } catch (IOException ex) { showError("Settings could not be saved", ex.getMessage()); }

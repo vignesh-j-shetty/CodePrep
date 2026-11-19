@@ -96,6 +96,39 @@ class LanguageEditorTest {
         });
     }
 
+    @Test void textSizeShortcutsScaleCodeAndLineNumbersWithinBounds() throws Exception {
+        fx(() -> {
+            Stage stage = new Stage();
+            try (var editor = new LanguageEditor(new JavaProvider(), message -> fail(message))) {
+                stage.setScene(new Scene(editor, 600, 400));
+                stage.getScene().getStylesheets().add(LanguageEditor.class.getResource("/styles.css").toExternalForm());
+                stage.show();
+                CodeArea area = (CodeArea) editor.lookup(".code-area");
+                editor.replaceText("int x;\nint y;");
+                assertEquals(LanguageEditor.DEFAULT_FONT_SIZE, editor.getFontSize());
+                press(area, KeyCode.EQUALS, false, true);
+                assertEquals(14, editor.getFontSize());
+                press(area, KeyCode.MINUS, false, true);
+                press(area, KeyCode.MINUS, false, true);
+                assertEquals(12, editor.getFontSize());
+                press(area, KeyCode.DIGIT0, false, true);
+                assertEquals(13, editor.getFontSize());
+                editor.setFontSize(500);
+                assertEquals(LanguageEditor.MAX_FONT_SIZE, editor.getFontSize());
+                editor.zoomIn();
+                assertEquals(LanguageEditor.MAX_FONT_SIZE, editor.getFontSize());
+                editor.setFontSize(20);
+                editor.applyCss();
+                editor.layout();
+                assertEquals(20, ((javafx.scene.text.Text) area.lookup(".text")).getFont().getSize(), 0.01);
+                assertEquals(20, ((Label) area.lookup(".lineno")).getFont().getSize(), 0.01);
+            } finally {
+                stage.close();
+            }
+            return null;
+        });
+    }
+
     @Test void completionMenusAndFormattingUseTheCurrentProvider() throws Exception {
         fx(() -> {
             Stage stage = new Stage();
@@ -244,6 +277,44 @@ class LanguageEditorTest {
                     editor.close();
                     stage.close();
                 }
+                return null;
+            });
+        } finally {
+            System.setProperty("user.home", oldHome);
+        }
+    }
+
+    @Test void textSizeSelectorSyncsWithEditorAndPersistsOnClose() throws Exception {
+        Path library = temp.resolve("library");
+        DemoProblemInstaller.install(library);
+        String oldHome = System.getProperty("user.home");
+        System.setProperty("user.home", temp.toString());
+        try {
+            fx(() -> {
+                Stage stage = new Stage();
+                var controller = new MainController(new AppConfig(library, 5, Language.JAVA, "dark", 15),
+                        stage, new LanguageProviderRegistry(List.of(new JavaProvider())), ExecutionManager.discover());
+                Parent root = (Parent) controller.createView();
+                stage.setScene(new Scene(root, 1000, 700));
+                controller.initialize();
+                stage.show();
+                root.applyCss();
+                root.layout();
+                var editor = (LanguageEditor) root.lookup(".language-editor");
+                try {
+                    @SuppressWarnings("unchecked")
+                    ComboBox<Integer> sizes = (ComboBox<Integer>) root.lookup(".font-size-selector");
+                    assertEquals(15, editor.getFontSize());
+                    assertEquals(15, sizes.getValue());
+                    sizes.setValue(18);
+                    assertEquals(18, editor.getFontSize());
+                    press((CodeArea) editor.lookup(".code-area"), KeyCode.EQUALS, false, true);
+                    assertEquals(20, sizes.getValue());
+                } finally {
+                    stage.hide();
+                }
+                assertEquals(20, AppConfig.load().editorFontSize());
+                assertEquals(Language.JAVA, AppConfig.load().selectedLanguage());
                 return null;
             });
         } finally {

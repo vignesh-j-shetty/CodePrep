@@ -63,6 +63,17 @@ class LibraryInitializationTest {
         assertFalse(Files.exists(home.resolve(".codeprep").resolve("problems")));
     }
 
+    @Test void editorFontSizeIsPersistedClampedAndDefaultsForOlderSettings() throws Exception {
+        Path root = Files.createDirectories(home.resolve("library"));
+        new AppConfig(root, 5, Language.JAVA, "dark", 18).save();
+        assertEquals(18, AppConfig.load().editorFontSize());
+        assertEquals(32, new AppConfig(root, 5, Language.JAVA, "dark", 99).editorFontSize());
+        assertEquals(10, new AppConfig(root, 5, Language.JAVA, "dark", 1).editorFontSize());
+        Files.writeString(AppConfig.configFile(), "{\"problemRoot\":" + new com.fasterxml.jackson.databind.ObjectMapper()
+                .writeValueAsString(root.toString()) + ",\"selectedLanguage\":\"JAVA\",\"theme\":\"dark\"}");
+        assertEquals(13, AppConfig.load().editorFontSize());
+    }
+
     @Test void missingConfiguredLibraryIsReportedAndNotRecreated() throws Exception {
         Path missing = home.resolve("missing");
         new AppConfig(missing, 5, Language.JAVA, "dark").save();
