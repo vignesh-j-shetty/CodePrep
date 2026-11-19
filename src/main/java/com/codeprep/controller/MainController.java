@@ -74,8 +74,12 @@ public final class MainController {
     private ProgressIndicator busyIndicator;
     private Button runButton;
     private Button runAllButton;
+    private Button saveButton;
+    private Button resetButton;
+    private Button randomButton;
     private Button settingsButton;
     private Button importButton;
+    private ComboBox<Language> languageSelector;
     private boolean busy;
     private TabPane outputTabs;
     private TextArea testCasesText;
@@ -133,7 +137,11 @@ public final class MainController {
         root.setCenter(workspace);
 
         problemList.getSelectionModel().selectedItemProperty().addListener((obs, old, value) -> {
-            if (value != null && !value.equals(selected)) selectProblem(value);
+            if (value == null) {
+                clearSelection();
+            } else if (!value.equals(selected)) {
+                selectProblem(value);
+            }
         });
         search.textProperty().addListener((obs, old, value) -> filterProblems());
         difficultyFilter.valueProperty().addListener((obs, old, value) -> filterProblems());
@@ -147,23 +155,27 @@ public final class MainController {
         search.setPromptText("Search title or topic");
         search.getStyleClass().add("search-field");
         search.setPrefWidth(280);
-        ComboBox<Language> language = new ComboBox<>();
-        language.getItems().setAll(Language.JAVA);
-        language.setValue(config.selectedLanguage());
-        language.setOnAction(e -> {
-            config = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language.getValue(), config.theme());
+        languageSelector = new ComboBox<>();
+        languageSelector.getItems().setAll(Language.JAVA);
+        languageSelector.setValue(config.selectedLanguage());
+        languageSelector.setOnAction(e -> {
+            config = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), languageSelector.getValue(), config.theme());
             saveConfig();
         });
         Button random = new Button("Random Problem");
+        random.setTooltip(new Tooltip("Choose an unsolved problem, ignoring the current filters"));
+        randomButton = random;
         random.setOnAction(e -> selectRandom());
         Button settings = new Button("Settings");
+        settings.setTooltip(new Tooltip("Configure the default test timeout"));
         settingsButton = settings;
         settings.setOnAction(e -> showSettings());
         importButton = new Button("Import Questions");
+        importButton.setTooltip(new Tooltip("Add questions from a folder"));
         importButton.setOnAction(e -> chooseImport());
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox bar = new HBox(14, logo, spacer, search, language, random, importButton, settings);
+        HBox bar = new HBox(14, logo, spacer, search, languageSelector, random, importButton, settings);
         bar.setAlignment(Pos.CENTER_LEFT);
         bar.setPadding(new Insets(12, 18, 12, 18));
         bar.getStyleClass().add("toolbar");
@@ -248,15 +260,21 @@ public final class MainController {
         VBox.setVgrow(editorScroll, Priority.ALWAYS);
         Button run = new Button("Run");
         run.getStyleClass().add("secondary-button");
+        run.setTooltip(new Tooltip("Run sample tests (Ctrl+Enter)"));
         runButton = run;
         run.setOnAction(e -> execute(false));
         Button all = new Button("Run All Tests");
         all.getStyleClass().add("primary-button");
+        all.setTooltip(new Tooltip("Run sample and hidden tests"));
         runAllButton = all;
         all.setOnAction(e -> execute(true));
         Button save = new Button("Save");
+        save.setTooltip(new Tooltip("Save this solution (Ctrl+S)"));
+        saveButton = save;
         save.setOnAction(e -> saveSolution());
         Button reset = new Button("Reset");
+        reset.setTooltip(new Tooltip("Restore the saved solution or starter template"));
+        resetButton = reset;
         reset.setOnAction(e -> resetSolution());
         Region actionSpacer = new Region();
         HBox.setHgrow(actionSpacer, Priority.ALWAYS);
@@ -325,6 +343,8 @@ public final class MainController {
         Problem current = selected;
         problemList.getItems().setAll(filtered);
         if (current != null && filtered.contains(current)) problemList.getSelectionModel().select(current);
+        else if (!filtered.isEmpty()) problemList.getSelectionModel().selectFirst();
+        else problemList.getSelectionModel().clearSelection();
     }
 
     private void rebuildSearchIndex() {
@@ -365,6 +385,24 @@ public final class MainController {
         resultsText.clear();
         errorsText.clear();
         outputText.clear();
+        updateActionState();
+    }
+
+    private void clearSelection() {
+        selected = null;
+        selectedTitle.setText("Select a problem");
+        description.getEngine().loadContent("<html><head><meta charset='utf-8'><style>" + markdownCss()
+                + "</style></head><body><main><h1>Ready when you are</h1>"
+                + "<p>Choose a problem from the list to view its description and start coding.</p>"
+                + "</main></body></html>");
+        changingEditor = true;
+        editor.clear();
+        changingEditor = false;
+        testCasesText.clear();
+        resultsText.clear();
+        errorsText.clear();
+        outputText.clear();
+        updateActionState();
     }
 
     private boolean confirmDiscard() {
@@ -482,13 +520,24 @@ public final class MainController {
 
     private void setBusy(boolean value, String message) {
         busy = value;
-        runButton.setDisable(value);
-        runAllButton.setDisable(value);
         problemList.setDisable(value);
-        settingsButton.setDisable(value);
-        importButton.setDisable(value);
         busyIndicator.setVisible(value);
         busyLabel.setText(message);
+        updateActionState();
+    }
+
+    private void updateActionState() {
+        boolean noProblem = selected == null;
+        if (runButton != null) runButton.setDisable(busy || noProblem);
+        if (runAllButton != null) runAllButton.setDisable(busy || noProblem);
+        if (saveButton != null) saveButton.setDisable(busy || noProblem);
+        if (resetButton != null) resetButton.setDisable(busy || noProblem);
+        if (search != null) search.setDisable(busy);
+        if (difficultyFilter != null) difficultyFilter.setDisable(busy);
+        if (randomButton != null) randomButton.setDisable(busy);
+        if (languageSelector != null) languageSelector.setDisable(busy);
+        if (settingsButton != null) settingsButton.setDisable(busy);
+        if (importButton != null) importButton.setDisable(busy);
     }
 
     private void chooseImport() {
@@ -627,7 +676,11 @@ public final class MainController {
         if (busy || allProblems.isEmpty()) return;
         List<Problem> choices = allProblems.stream().filter(p -> !progressService.isSolved(p.id())).toList();
         if (choices.isEmpty()) choices = allProblems;
-        problemList.getSelectionModel().select(choices.get(new Random().nextInt(choices.size())));
+        Problem choice = choices.get(new Random().nextInt(choices.size()));
+        search.clear();
+        difficultyFilter.setValue("All difficulties");
+        filterProblems();
+        problemList.getSelectionModel().select(choice);
     }
 
     private void showSettings() {
