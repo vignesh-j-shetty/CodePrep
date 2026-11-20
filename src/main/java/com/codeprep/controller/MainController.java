@@ -12,6 +12,7 @@ import com.codeprep.repository.ProblemRepository;
 import com.codeprep.repository.ProgressRepository;
 import com.codeprep.service.*;
 import com.codeprep.service.ProblemMarkdownParser;
+import com.codeprep.workspace.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -21,14 +22,13 @@ import java.util.*;
 import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-import javafx.geometry.Orientation;
 import javafx.scene.Node;
 import javafx.scene.control.*;
-import javafx.scene.Parent;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.*;
 import javafx.scene.web.WebView;
 import javafx.stage.DirectoryChooser;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.util.StringConverter;
 import org.commonmark.parser.Parser;
@@ -50,6 +50,12 @@ public final class MainController {
     private Problem selected;
     private boolean changingEditor;
     private boolean changingLanguage;
+    private boolean changingTabs;
+    private TabPane codeTabs;
+    private WorkspaceManager workspace;
+    private BorderPane root;
+    private final WorkspaceStore workspaceStore = new WorkspaceStore();
+    private boolean canSaveWorkspace = true;
     private ListView<Problem> problemList;
     private LanguageEditor editor;
     private WebView description;
@@ -107,23 +113,27 @@ public final class MainController {
                 event.consume();
                 showInfo("Operation in progress", "Wait for import or execution to finish before closing CodePrep.");
             } else if (hasUnsavedChanges() && !confirmClose()) event.consume();
+            else if (canSaveWorkspace && !saveWorkspace(WorkspaceStore.defaultFile())) event.consume();
         });
         stage.setOnHidden(event -> {
             if (fontSizeSave.getStatus() == javafx.animation.Animation.Status.RUNNING) {
                 fontSizeSave.stop();
                 persistEditorFontSize();
             }
+            workspace.close();
             editor.close();
         });
-        BorderPane root = new BorderPane();
+        root = new BorderPane();
         root.getStyleClass().add("root");
-        root.setTop(buildToolbar());
+        Node toolbar = buildToolbar();
         problemList = new ListView<>();
+        problemList.setId("problems-list");
         problemList.setCellFactory(view -> new ProblemCell());
         problemList.setPlaceholder(new Label("No matching problems"));
         problemList.setPrefWidth(270);
-        problemList.setMinWidth(220);
+        problemList.setMinWidth(0);
         VBox left = new VBox(10, buildProblemListHeader(), problemList);
+        left.setMinSize(0, 0);
         left.getStyleClass().add("side-panel");
         left.setPadding(new Insets(16));
         VBox.setVgrow(problemList, Priority.ALWAYS);
@@ -131,24 +141,23 @@ public final class MainController {
         description = new WebView();
         description.setContextMenuEnabled(false);
         StackPane descriptionPane = new StackPane(description);
+        descriptionPane.setMinSize(0, 0);
         descriptionPane.getStyleClass().add("description-pane");
-        VBox editorPane = buildEditorPane();
-        SplitPane center = new SplitPane(descriptionPane, editorPane);
-        center.setDividerPositions(0.47);
-        descriptionPane.setMinWidth(220);
-        editorPane.setMinWidth(300);
-        center.getStyleClass().add("main-split");
-        SplitPane main = new SplitPane(left, center);
-        main.setDividerPositions(0.21);
-        SplitPane workspace = new SplitPane(main, buildResultsPane());
-        workspace.setOrientation(Orientation.VERTICAL);
-        workspace.setDividerPositions(0.73);
-        root.setCenter(workspace);
+        workspace = new WorkspaceManager(stage, Map.of(
+                PanelId.PROBLEMS, left, PanelId.PROBLEM, descriptionPane,
+                PanelId.EDITOR, buildEditorPane(), PanelId.RESULTS, buildResultsPane()));
+        Menu viewMenu = workspace.createViewMenu();
+        MenuItem saveLayout = new MenuItem("Save Layout As...");
+        saveLayout.setOnAction(e -> chooseWorkspaceFile(true));
+        MenuItem loadLayout = new MenuItem("Open Layout...");
+        loadLayout.setOnAction(e -> chooseWorkspaceFile(false));
+        viewMenu.getItems().addAll(new SeparatorMenuItem(), saveLayout, loadLayout);
+        root.setTop(new VBox(new MenuBar(viewMenu), toolbar));
+        root.setCenter(workspace.view());
+        applyTheme();
 
         problemList.getSelectionModel().selectedItemProperty().addListener((obs, old, value) -> {
-            if (value == null) {
-                clearSelection();
-            } else if (!value.equals(selected)) {
+            if (value != null && !value.equals(selected)) {
                 selectProblem(value);
             }
         });
@@ -189,7 +198,7 @@ public final class MainController {
         importButton.setOnAction(e -> chooseImport());
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox bar = new HBox(14, logo, spacer, search, languageSelector, random, importButton, settings);
+        HBox bar = new HBox(14, logo, spacer, languageSelector, random, importButton, settings);
         bar.setAlignment(Pos.CENTER_LEFT);
         bar.setPadding(new Insets(12, 18, 12, 18));
         bar.getStyleClass().add("toolbar");
@@ -204,7 +213,7 @@ public final class MainController {
                 Path file = SolutionDocuments.file(problem.directory(), provider);
                 String saved = Files.isRegularFile(file) ? Files.readString(file)
                         : documents.initial().getOrDefault(entry.getKey(), provider.starterCode());
-                if (!entry.getValue().equals(saved)) return true;
+                if (!SolutionDocuments.sameContent(entry.getValue(), saved)) return true;
             }
             return false;
         } catch (IOException ex) {
@@ -229,7 +238,8 @@ public final class MainController {
         difficultyFilter.setValue("All difficulties");
         counts = new Label("0 problems · 0 solved");
         counts.getStyleClass().add("muted");
-        VBox box = new VBox(10, heading, difficultyFilter, counts);
+        search.setMaxWidth(Double.MAX_VALUE);
+        VBox box = new VBox(10, heading, search, difficultyFilter, counts);
         return box;
     }
 
@@ -253,9 +263,33 @@ public final class MainController {
         caretPosition.getStyleClass().add("editor-status");
         editor.caretPositionProperty().addListener((observable, oldValue, newValue) -> updateCaretPosition());
         editor.textProperty().addListener((obs, old, value) -> {
-            if (!changingEditor && selected != null) documents.drafts().put(documentKey(selected), value);
+            if (!changingEditor && selected != null) {
+                documents.drafts().put(documentKey(selected), value);
+                updateDocumentTitles();
+            }
         });
-        VBox.setVgrow(editor, Priority.ALWAYS);
+        codeTabs = new TabPane();
+        codeTabs.setId("solution-tabs");
+        codeTabs.setTabDragPolicy(TabPane.TabDragPolicy.REORDER);
+        codeTabs.setTabMaxWidth(240);
+        codeTabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
+        codeTabs.getSelectionModel().selectedItemProperty().addListener((obs, old, tab) -> {
+            if (changingTabs || tab == null) return;
+            if (busy) {
+                changingTabs = true;
+                codeTabs.getSelectionModel().select(old);
+                changingTabs = false;
+                return;
+            }
+            var key = (SolutionDocuments.Key) tab.getUserData();
+            Problem problem = allProblems.stream().filter(p -> p.id().equals(key.problemId())).findFirst().orElseThrow();
+            changingTabs = true;
+            try {
+                if (openDocument(problem, key.language())) attachEditor(tab);
+                else codeTabs.getSelectionModel().select(old);
+            } finally { changingTabs = false; }
+        });
+        VBox.setVgrow(codeTabs, Priority.ALWAYS);
         Button run = new Button("Run");
         run.getStyleClass().add("secondary-button");
         run.setTooltip(new Tooltip("Run sample tests (Ctrl+Enter)"));
@@ -274,13 +308,12 @@ public final class MainController {
         reset.setTooltip(new Tooltip("Restore the saved solution or starter template"));
         resetButton = reset;
         reset.setOnAction(e -> resetSolution());
-        Region actionSpacer = new Region();
-        HBox.setHgrow(actionSpacer, Priority.ALWAYS);
-        HBox actions = new HBox(8, caretPosition, buildFontSizeSelector(), actionSpacer, run, all, save, reset);
+        FlowPane actions = new FlowPane(8, 8, caretPosition, buildFontSizeSelector(), run, all, save, reset);
         actions.setAlignment(Pos.CENTER_RIGHT);
         actions.setPadding(new Insets(10, 0, 0, 0));
         actions.getStyleClass().add("editor-actions");
-        VBox box = new VBox(10, titleBar, editor, actions);
+        VBox box = new VBox(10, titleBar, codeTabs, actions);
+        box.setMinSize(0, 0);
         box.setPadding(new Insets(16));
         box.getStyleClass().add("editor-pane");
         return box;
@@ -342,7 +375,7 @@ public final class MainController {
                 new Tab("Compilation Errors", errorsText), new Tab("Execution Output", outputText));
         outputTabs.getTabs().forEach(tab -> tab.setClosable(false));
         outputTabs.setPrefHeight(220);
-        outputTabs.setMinHeight(130);
+        outputTabs.setMinSize(0, 0);
         return outputTabs;
     }
 
@@ -361,7 +394,19 @@ public final class MainController {
             rebuildSearchIndex();
             filterProblems();
             updateCounts();
-            if (!allProblems.isEmpty()) problemList.getSelectionModel().selectFirst();
+            boolean restored = false;
+            if (Files.exists(WorkspaceStore.defaultFile())) {
+                try {
+                    restoreWorkspace(workspaceStore.load(WorkspaceStore.defaultFile()));
+                    restored = true;
+                } catch (IOException ex) {
+                    canSaveWorkspace = false;
+                    showError("Could not restore workspace", ex.getMessage()
+                            + "\nThe current session will not overwrite this file. Use View > Save Layout As to save a new layout.");
+                }
+            }
+            if (!restored && selected == null && !allProblems.isEmpty()) selectProblem(allProblems.get(0));
+            updateActionState();
         } catch (IOException ex) {
             showError("Could not load problems", ex.getMessage());
         }
@@ -378,8 +423,7 @@ public final class MainController {
         Problem current = selected;
         problemList.getItems().setAll(filtered);
         if (current != null && filtered.contains(current)) problemList.getSelectionModel().select(current);
-        else if (!filtered.isEmpty()) problemList.getSelectionModel().selectFirst();
-        else problemList.getSelectionModel().clearSelection();
+        else if (current == null && !filtered.isEmpty()) problemList.getSelectionModel().selectFirst();
     }
 
     private void rebuildSearchIndex() {
@@ -396,30 +440,48 @@ public final class MainController {
     }
 
     private void selectProblem(Problem problem) {
+        openDocument(problem, config.selectedLanguage());
+    }
+
+    private boolean openDocument(Problem problem, Language language) {
         String content;
         try {
-            content = documentContent(problem, config.selectedLanguage());
+            content = documentContent(problem, language);
+            if (!language.equals(config.selectedLanguage())) {
+                AppConfig updated = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language,
+                        config.theme(), config.editorFontSize());
+                updated.save();
+                config = updated;
+            }
         } catch (IOException ex) {
-            showError("Could not read solution", ex.getMessage());
+            showError("Could not open solution", ex.getMessage());
             problemList.getSelectionModel().select(selected);
-            return;
+            return false;
         }
+        boolean wasChangingLanguage = changingLanguage;
+        changingLanguage = true;
+        languageSelector.setValue(language);
+        changingLanguage = wasChangingLanguage;
         selected = problem;
         selectedTitle.setText(problem.title() + "  ·  " + problem.difficulty().name());
-        String html = markdownRenderer.render(markdownParser.parse(problem.descriptionMarkdown()));
-        description.getEngine().loadContent("<html><head><meta charset='utf-8'><style>" + markdownCss() + "</style></head><body><main>" + html + "</main></body></html>");
+        renderDescription();
         changingEditor = true;
+        editor.setProvider(activeProvider());
         editor.replaceText(content);
         changingEditor = false;
+        selectSolutionTab(problem);
+        if (problemList.getItems().contains(problem)) problemList.getSelectionModel().select(problem);
         refreshSampleCases();
         resultsText.clear();
         errorsText.clear();
         outputText.clear();
         updateActionState();
+        return true;
     }
 
     private void clearSelection() {
         selected = null;
+        problemList.getSelectionModel().clearSelection();
         selectedTitle.setText("Select a problem");
         description.getEngine().loadContent("<html><head><meta charset='utf-8'><style>" + markdownCss()
                 + "</style></head><body><main><h1>Ready when you are</h1>"
@@ -454,15 +516,26 @@ public final class MainController {
 
     private void switchLanguage(Language language) {
         if (language == null || language.equals(config.selectedLanguage())) return;
+        if (selected != null) {
+            if (!openDocument(selected, language)) {
+                changingLanguage = true;
+                languageSelector.setValue(config.selectedLanguage());
+                changingLanguage = false;
+            }
+            return;
+        }
         try {
-            String content = selected == null ? "" : documentContent(selected, language);
             AppConfig updated = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language, config.theme(),
                     config.editorFontSize());
             updated.save();
             config = updated;
+            boolean wasChangingLanguage = changingLanguage;
+            changingLanguage = true;
+            languageSelector.setValue(language);
+            changingLanguage = wasChangingLanguage;
             changingEditor = true;
             editor.setProvider(activeProvider());
-            editor.replaceText(content);
+            editor.clear();
             changingEditor = false;
             resultsText.clear();
             errorsText.clear();
@@ -531,6 +604,7 @@ public final class MainController {
     }
 
     private void present(ExecutionResult result, boolean allTests) {
+        workspace.show(PanelId.RESULTS);
         errorsText.setText(result.compilationErrors());
         outputText.setText(result.executionOutput());
         List<TestCaseDisplayResult> display = new ArrayList<>();
@@ -601,6 +675,7 @@ public final class MainController {
         if (languageSelector != null) languageSelector.setDisable(busy);
         if (settingsButton != null) settingsButton.setDisable(busy);
         if (importButton != null) importButton.setDisable(busy);
+        if (codeTabs != null) codeTabs.setDisable(busy);
     }
 
     private void chooseImport() {
@@ -717,6 +792,7 @@ public final class MainController {
             Files.writeString(target, editor.getText());
             documents.drafts().put(documentKey(selected), editor.getText());
             documents.initial().put(documentKey(selected), editor.getText());
+            updateDocumentTitles();
             showInfo("Solution saved", target.toString());
         } catch (IOException ex) { showError("Could not save solution", ex.getMessage()); }
     }
@@ -737,6 +813,7 @@ public final class MainController {
             changingEditor = true;
             editor.replaceText(content);
             changingEditor = false;
+            updateDocumentTitles();
         } catch (IOException ex) { showError("Could not reset solution", ex.getMessage()); }
     }
 
@@ -758,7 +835,7 @@ public final class MainController {
         rootLabel.setPrefColumnCount(40);
         TextField timeout = new TextField(Integer.toString(config.executionTimeoutSeconds()));
         ComboBox<String> theme = new ComboBox<>();
-        theme.getItems().setAll("dark");
+        theme.getItems().setAll("dark", "light");
         theme.setValue(config.theme());
         GridPane form = new GridPane();
         form.setHgap(12);
@@ -788,10 +865,190 @@ public final class MainController {
                     config.editorFontSize());
             updated.save();
             config = updated;
+            applyTheme();
+            if (selected != null) renderDescription();
         } catch (IOException ex) { showError("Settings could not be saved", ex.getMessage()); }
     }
 
+    private void selectSolutionTab(Problem problem) {
+        if (changingTabs) return;
+        changingTabs = true;
+        try {
+            var key = documentKey(problem);
+            Tab tab = codeTabs.getTabs().stream().filter(t -> key.equals(t.getUserData())).findFirst()
+                    .orElseGet(() -> createDocumentTab(problem, key.language()));
+            codeTabs.getSelectionModel().select(tab);
+            attachEditor(tab);
+            updateDocumentTitles();
+        } finally { changingTabs = false; }
+    }
+
+    private Tab createDocumentTab(Problem problem, Language language) {
+        var key = new SolutionDocuments.Key(problem.id(), language);
+        Tab tab = new Tab();
+        tab.setUserData(key);
+        tab.setTooltip(new Tooltip(problem.title() + "\n" + SolutionDocuments.file(problem.directory(), languages.require(language))));
+        tab.setOnCloseRequest(event -> {
+            if (busy) { event.consume(); return; }
+            if (isDocumentDirty(key)) {
+                Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                        "Discard unsaved changes to " + problem.title() + " (" + language.name() + ")?",
+                        ButtonType.CANCEL, ButtonType.OK);
+                confirm.initOwner(stage);
+                confirm.setHeaderText("Close solution tab?");
+                if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+                    event.consume();
+                    return;
+                }
+                documents.drafts().remove(key);
+            }
+        });
+        tab.setOnClosed(event -> {
+            if (codeTabs.getTabs().isEmpty()) clearSelection();
+        });
+        codeTabs.getTabs().add(tab);
+        return tab;
+    }
+
+    private void attachEditor(Tab selectedTab) {
+        codeTabs.getTabs().forEach(tab -> { if (tab != selectedTab) tab.setContent(null); });
+        selectedTab.setContent(editor);
+    }
+
+    private boolean isDocumentDirty(SolutionDocuments.Key key) {
+        String draft = documents.drafts().get(key);
+        return draft != null && !SolutionDocuments.sameContent(draft, documents.initial().get(key));
+    }
+
+    private void updateDocumentTitles() {
+        for (Tab tab : codeTabs.getTabs()) {
+            var key = (SolutionDocuments.Key) tab.getUserData();
+            Problem problem = allProblems.stream().filter(p -> p.id().equals(key.problemId())).findFirst().orElseThrow();
+            tab.setText((isDocumentDirty(key) ? "* " : "") + problem.title() + " / "
+                    + languages.require(key.language()).solutionFileName());
+        }
+    }
+
+    private WorkspaceState workspaceState() {
+        List<WorkspaceState.DocumentTab> tabs = codeTabs.getTabs().stream().map(tab -> {
+            var key = (SolutionDocuments.Key) tab.getUserData();
+            return new WorkspaceState.DocumentTab(key.problemId(), key.language().name());
+        }).toList();
+        Tab active = codeTabs.getSelectionModel().getSelectedItem();
+        WorkspaceState.DocumentTab activeTab = active == null ? null : tabs.get(codeTabs.getTabs().indexOf(active));
+        return new WorkspaceState(1, workspace.snapshot(), tabs, activeTab,
+                selected == null ? null : selected.id(), config.theme(), editor.getFontSize());
+    }
+
+    private boolean saveWorkspace(Path file) {
+        try {
+            workspaceStore.save(file, workspaceState());
+            if (file.toAbsolutePath().normalize().equals(WorkspaceStore.defaultFile().toAbsolutePath().normalize())) {
+                canSaveWorkspace = true;
+            }
+            return true;
+        } catch (IOException ex) {
+            showError("Could not save workspace", ex.getMessage());
+            return false;
+        }
+    }
+
+    private void chooseWorkspaceFile(boolean save) {
+        if (busy) {
+            showInfo("Operation in progress", "Wait for import or execution before saving or opening a layout.");
+            return;
+        }
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle(save ? "Save Workspace Layout" : "Open Workspace Layout");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CodePrep workspace (*.json)", "*.json"));
+        if (save) chooser.setInitialFileName("codeprep-workspace.json");
+        java.io.File file = save ? chooser.showSaveDialog(stage) : chooser.showOpenDialog(stage);
+        if (file == null) return;
+        if (save) saveWorkspace(file.toPath());
+        else {
+            try {
+                restoreWorkspace(workspaceStore.load(file.toPath()));
+            } catch (IOException ex) { showError("Could not open workspace", ex.getMessage()); }
+        }
+    }
+
+    private void restoreWorkspace(WorkspaceState saved) throws IOException {
+        List<String> unavailable = new ArrayList<>();
+        Map<WorkspaceState.DocumentTab, Problem> available = new LinkedHashMap<>();
+        for (var tab : saved.openTabs()) {
+            Problem problem = allProblems.stream().filter(p -> p.id().equals(tab.problemId())).findFirst().orElse(null);
+            Language language = Language.valueOf(tab.language());
+            if (problem == null || languages.providers().stream().noneMatch(p -> p.language().equals(language))) {
+                unavailable.add(tab.problemId() + " (" + tab.language() + ")");
+            } else {
+                documentContent(problem, language);
+                available.put(tab, problem);
+            }
+        }
+        var active = available.containsKey(saved.activeTab()) ? saved.activeTab()
+                : available.keySet().stream().findFirst().orElse(null);
+        Language language = active == null ? config.selectedLanguage() : Language.valueOf(active.language());
+        AppConfig updated = new AppConfig(config.problemRoot(), config.executionTimeoutSeconds(), language,
+                saved.theme(), saved.editorFontSize());
+        updated.save();
+        config = updated;
+        changingTabs = true;
+        changingLanguage = true;
+        try {
+            codeTabs.getTabs().forEach(tab -> tab.setContent(null));
+            codeTabs.getTabs().clear();
+            for (var entry : available.entrySet()) {
+                createDocumentTab(entry.getValue(), Language.valueOf(entry.getKey().language()));
+            }
+            languageSelector.setValue(language);
+            editor.setProvider(activeProvider());
+            editor.setFontSize(saved.editorFontSize());
+            clearSelection();
+            if (active != null) {
+                selectProblem(available.get(active));
+                var key = new SolutionDocuments.Key(active.problemId(), language);
+                Tab tab = codeTabs.getTabs().stream().filter(t -> key.equals(t.getUserData())).findFirst().orElseThrow();
+                codeTabs.getSelectionModel().select(tab);
+                attachEditor(tab);
+            } else if (saved.selectedProblem() != null) {
+                Problem problem = allProblems.stream().filter(p -> p.id().equals(saved.selectedProblem())).findFirst().orElse(null);
+                if (problem != null) {
+                    Tab tab = createDocumentTab(problem, language);
+                    selectProblem(problem);
+                    codeTabs.getSelectionModel().select(tab);
+                    attachEditor(tab);
+                } else unavailable.add(saved.selectedProblem());
+            }
+            updateDocumentTitles();
+        } finally {
+            changingTabs = false;
+            changingLanguage = false;
+        }
+        applyTheme();
+        workspace.restore(saved.layout());
+        if (!unavailable.isEmpty()) showInfo("Some workspace documents are unavailable",
+                "Missing problems or language modules:\n" + String.join("\n", unavailable));
+    }
+
+    private void applyTheme() {
+        root.getStyleClass().remove("light");
+        if ("light".equals(config.theme())) root.getStyleClass().add("light");
+        workspace.setTheme(config.theme());
+    }
+
+    private void renderDescription() {
+        String html = markdownRenderer.render(markdownParser.parse(selected.descriptionMarkdown()));
+        description.getEngine().loadContent("<html><head><meta charset='utf-8'><style>" + markdownCss()
+                + "</style></head><body><main>" + html + "</main></body></html>");
+    }
+
     private String markdownCss() {
+        if ("light".equals(config.theme())) {
+            return "body{font-family:'Segoe UI',Arial,sans-serif;background:#ffffff;color:#24292f;"
+                    + "padding:24px;line-height:1.65}pre,code{background:#f0f2f5;color:#663c00;"
+                    + "font-family:Consolas,monospace}pre{padding:14px}a{color:#175cd3}"
+                    + "table{border-collapse:collapse}th,td{border:1px solid #ccd2db;padding:7px}";
+        }
         return "html{background:#14171d}body{font-family:'Segoe UI',Arial,sans-serif;background:#14171d;color:#dce1ea;"
                 + "margin:0;padding:30px 34px;line-height:1.68;font-size:14px}main{max-width:820px;margin:0 auto}"
                 + "h1,h2,h3{color:#f2f5fa;line-height:1.3}h1{font-size:26px;margin:0 0 20px}"

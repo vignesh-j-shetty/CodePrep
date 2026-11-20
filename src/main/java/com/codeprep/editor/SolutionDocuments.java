@@ -13,6 +13,12 @@ public final class SolutionDocuments {
 
     public Map<Key, String> drafts() { return drafts; }
     public Map<Key, String> initial() { return initial; }
+    /** RichTextFX represents every line break as LF, including files loaded with CRLF. */
+    public static boolean sameContent(String first, String second) {
+        if (first == null || second == null) return first == second;
+        return first.replace("\r\n", "\n").replace('\r', '\n')
+                .equals(second.replace("\r\n", "\n").replace('\r', '\n'));
+    }
     public static Path directory(Path problem, LanguageProvider provider) {
         return problem.resolve("solutions").resolve(provider.solutionDirectory());
     }

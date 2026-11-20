@@ -183,3 +183,62 @@
 .check-box { -fx-text-fill: #dce1ea; }
 .check-box .box { -fx-background-color: #20242d; -fx-border-color: #495365; -fx-border-radius: 3px; }
 .check-box:selected .mark { -fx-background-color: #ffffff; }
+
+.workspace { -fx-padding: 7px; -fx-background-color: #292e39; }
+.dock-tabs { -fx-background-color: #14171d; }
+.dock-tabs > .tab-header-area { -fx-padding: 0; }
+.dock-actions {
+    -fx-background-color: transparent;
+    -fx-text-fill: #aeb7c6;
+    -fx-padding: 0 4px;
+    -fx-cursor: hand;
+}
+.dock-actions > .arrow-button { -fx-padding: 0; }
+.dock-actions > .arrow-button > .arrow { -fx-padding: 0; }
+.dock-drop-hint {
+    -fx-background-color: rgba(57, 120, 232, 0.3);
+    -fx-border-color: #80b7ff;
+    -fx-border-width: 2px;
+    -fx-font-size: 18px;
+    -fx-text-fill: white;
+}
+.menu-bar, .context-menu { -fx-background-color: #20242d; }
+.menu-bar .label, .menu-item .label { -fx-text-fill: #dce1ea; }
+.menu:hover, .menu:showing, .menu-item:focused { -fx-background-color: #354765; }
+.tab-close-button { -fx-background-color: #929bad; }
+.light.root, .light {
+    -fx-background-color: #f5f6f8;
+    -fx-text-fill: #24292f;
+}
+.light .toolbar, .light .side-panel, .light .results-pane, .light .editor-pane,
+.light .description-pane, .light .dock-tabs, .light .split-pane {
+    -fx-background-color: #f5f6f8;
+}
+.light .label, .light .logo, .light .pane-title, .light .problem-name,
+.light .menu-bar .label, .light .menu-item .label { -fx-text-fill: #24292f; }
+.light .muted, .light .editor-status { -fx-text-fill: #626c7c; }
+.light .text-field, .light .combo-box, .light .list-view, .light .output-area,
+.light .text-area .content {
+    -fx-background-color: white;
+    -fx-control-inner-background: white;
+    -fx-text-fill: #24292f;
+    -fx-prompt-text-fill: #626c7c;
+    -fx-border-color: #cbd1da;
+}
+.light .combo-box > .list-cell { -fx-text-fill: #24292f; }
+.light .button { -fx-background-color: #e2e6ed; -fx-text-fill: #24292f; }
+.light .primary-button { -fx-background-color: #3978e8; -fx-text-fill: white; }
+.light .tab-pane .tab-header-area, .light .tab-pane .tab-header-background,
+.light .menu-bar, .light .context-menu { -fx-background-color: #e7eaf0; }
+.light .tab { -fx-background-color: #e7eaf0; }
+.light .tab:selected { -fx-background-color: white; }
+.light .list-cell:filled:selected, .light .list-cell:filled:hover { -fx-background-color: #dbe8ff; }
+.light .list-cell:filled:selected .problem-name { -fx-text-fill: #24292f; }
+.light .code-area { -fx-background-color: white; }
+.light .code-area .text { -fx-fill: #24292f; }
+.light .code-area .lineno { -fx-background-color: #f0f2f5; -fx-text-fill: #626c7c; }
+.light .code-area .keyword { -fx-fill: #8c38a0; }
+.light .code-area .string { -fx-fill: #24733b; }
+.light .code-area .comment { -fx-fill: #626c7c; }
+.light .code-area .number { -fx-fill: #9c5200; }
+.light .workspace, .light .split-pane-divider { -fx-background-color: #cbd1da; }
